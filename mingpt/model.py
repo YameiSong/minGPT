@@ -35,8 +35,13 @@ class CausalSelfAttention(nn.Module):
 
     def __init__(self, config):
         super().__init__()
+        # === assert: This ensures that each attention head can process an equal portion of the embedding dimensions, 
+        # which is crucial for the model's architecture to function correctly.
         assert config.n_embd % config.n_head == 0
         # key, query, value projections for all heads, but in a batch
+        # === This linear layer is part of the process of computing the query, key, and value vectors for the attention mechanism. 
+        # By setting the output size to 3 times the input size, the layer can simultaneously compute these three vectors 
+        # in a single matrix multiplication, which is more efficient than computing them separately.
         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd)
         # output projection
         self.c_proj = nn.Linear(config.n_embd, config.n_embd)
@@ -53,16 +58,33 @@ class CausalSelfAttention(nn.Module):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
+        # === q: The query vector represents `the current token` or word in the sequence for which we want to compute the attention scores. 
+        # It is used to query the other tokens in the sequence to determine how much attention should be paid to each of them.
+        # === k: The key vector represents `the other tokens` in the sequence. 
+        # It is used to compare with the query vector to determine how much attention should be paid to each token.
+        # === v: The value vector represents the value or content of each token in the sequence. 
+        # It is used to compute the weighted average of the values of all tokens in the sequence, 
+        # where the weights are determined by the attention scores.
+        # === the tensor's shape is (B, T, C), where C is the embedding dimensionality.
+        # dim=2: Split the tensor into 3 parts along the 2nd dimension (embedding dimensionality).
         q, k ,v  = self.c_attn(x).split(self.n_embd, dim=2)
+        # === transpose(1, 2): Swap the 1st (T) and 2nd (n_head) dimensions of the tensor.
         k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
 
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
+        # === @: Matrix multiplication
+        # === q @ k.transpose(-2, -1): Compute the dot product of the query and key vectors for each head. (T, hs) x (hs, T) -> (T, T)
+        # === math.sqrt(k.size(-1)): scaling by the square root of the dimensionality of the key vectors.
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+        # === masked_fill: Replace elements in the tensor with `-inf` based on the mask tensor `bias`.
         att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
         att = F.softmax(att, dim=-1)
         att = self.attn_dropout(att)
+        # === att @ v: Compute the weighted average of the value vectors for each head. (T, T) x (T, hs) -> (T, hs)
+        # === The shape of att is (B, nh, T, T), where B is the batch size, nh is the number of attention heads, 
+        # T is the sequence length, and the last T represents the attention scores for each token in the sequence.
         y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
 
@@ -88,7 +110,11 @@ class Block(nn.Module):
         self.mlpf = lambda x: m.dropout(m.c_proj(m.act(m.c_fc(x)))) # MLP forward
 
     def forward(self, x):
+        # === The output of the self-attention mechanism is added to the input of the block (residual connection)
         x = x + self.attn(self.ln_1(x))
+        # === The normalized result is passed through the MLP, which applies the sequence of 
+        # fully connected, activation, projection, and dropout layers.
+        # === The output of the MLP is added to the output of the self-attention mechanism (residual connection)
         x = x + self.mlpf(self.ln_2(x))
         return x
 
