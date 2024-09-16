@@ -100,6 +100,7 @@ class Block(nn.Module):
         self.ln_1 = nn.LayerNorm(config.n_embd)
         self.attn = CausalSelfAttention(config)
         self.ln_2 = nn.LayerNorm(config.n_embd)
+        # === ModuleDict holds submodules in a dictionary, it is an ordered dictionary that respects the order of insertion.
         self.mlp = nn.ModuleDict(dict(
             c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd),
             c_proj  = nn.Linear(4 * config.n_embd, config.n_embd),
@@ -113,7 +114,7 @@ class Block(nn.Module):
         # === The output of the self-attention mechanism is added to the input of the block (residual connection)
         x = x + self.attn(self.ln_1(x))
         # === The normalized result is passed through the MLP, which applies the sequence of 
-        # fully connected, activation, projection, and dropout layers.
+        # fully connected, projection, activation, and dropout layers.
         # === The output of the MLP is added to the output of the self-attention mechanism (residual connection)
         x = x + self.mlpf(self.ln_2(x))
         return x
@@ -168,12 +169,19 @@ class GPT(nn.Module):
             }[config.model_type])
 
         self.transformer = nn.ModuleDict(dict(
+            # === word token embedding: map all input token indices to their corresponding embeddings
             wte = nn.Embedding(config.vocab_size, config.n_embd),
+            # === position embedding: map the position of the token in the sequence to an embedding
             wpe = nn.Embedding(config.block_size, config.n_embd),
             drop = nn.Dropout(config.embd_pdrop),
+            # === ModuleList holds submodules in a list
+            # === N-layer transformer
+            # Each block consists of a self-attention mechanism and a multi-layer perceptron (MLP).
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
             ln_f = nn.LayerNorm(config.n_embd),
         ))
+        # === language model head: map the output (logits) of the transformer to the vocabulary size
+        # === Logits are raw, unnormalized scores for each token in the vocabulary before applying softmax
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
         # init all weights, and apply a special scaled init to the residual projections, per GPT-2 paper
@@ -183,6 +191,7 @@ class GPT(nn.Module):
                 torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * config.n_layer))
 
         # report number of parameters (note we don't count the decoder parameters in lm_head)
+        # === numel: Returns the total number of elements in the input tensor.
         n_params = sum(p.numel() for p in self.transformer.parameters())
         print("number of parameters: %.2fM" % (n_params/1e6,))
 
@@ -230,7 +239,9 @@ class GPT(nn.Module):
             if any(k.endswith(w) for w in transposed):
                 # special treatment for the Conv1D weights we need to transpose
                 assert sd_hf[k].shape[::-1] == sd[k].shape
+                # === Disable gradient computation for parameter copying
                 with torch.no_grad():
+                    # === t(): Transpose the tensor
                     sd[k].copy_(sd_hf[k].t())
             else:
                 # vanilla copy over the other parameters
@@ -289,6 +300,8 @@ class GPT(nn.Module):
         device = idx.device
         b, t = idx.size()
         assert t <= self.block_size, f"Cannot forward sequence of length {t}, block size is only {self.block_size}"
+        # === arrage: create a tensor of shape (t,)
+        # === squeeze: change the shape of the tensor to (1, t), to match the shape the expected input shape of wpe
         pos = torch.arange(0, t, dtype=torch.long, device=device).unsqueeze(0) # shape (1, t)
 
         # forward the GPT model itself
@@ -303,6 +316,12 @@ class GPT(nn.Module):
         # if we are given some desired targets also calculate the loss
         loss = None
         if targets is not None:
+            # === logits shape: (batch_size, sequence_length, vocab_size)
+            # logits.size(-1): vocab_size
+            # logits.view(-1, logits.size(-1)) : (batch_size, sequence_length, vocab_size) -> (batch_size * sequence_length, vocab_size)
+            # === targets shape: (batch_size, sequence_length)
+            # targets.view(-1): (batch_size, sequence_length) -> (batch_size * sequence_length)
+            # === ignore_index=-1: Specifies that any target value of -1 should be ignored during the loss computation.
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
 
         return logits, loss
@@ -320,6 +339,7 @@ class GPT(nn.Module):
             # forward the model to get the logits for the index in the sequence
             logits, _ = self(idx_cond)
             # pluck the logits at the final step and scale by desired temperature
+            # === -1: get the logits for the last token in the sequence
             logits = logits[:, -1, :] / temperature
             # optionally crop the logits to only the top k options
             if top_k is not None:
