@@ -25,7 +25,7 @@ class Trainer:
         C.learning_rate = 3e-4
         C.betas = (0.9, 0.95)
         C.weight_decay = 0.1 # only applied on matmul weights
-        C.grad_norm_clip = 1.0
+        C.grad_norm_clip = 1.0 # === the norm of the gradient will be clipped to a max value of 1.0
         return C
 
     def __init__(self, config, model, train_dataset):
@@ -86,6 +86,7 @@ class Trainer:
             except StopIteration:
                 data_iter = iter(train_loader)
                 batch = next(data_iter)
+            # === move the tensors in the batch to the device
             batch = [t.to(self.device) for t in batch]
             x, y = batch
 
@@ -93,9 +94,14 @@ class Trainer:
             logits, self.loss = model(x, y)
 
             # backprop and update the parameters
+            # === zero_grad() clears old gradients from the last step 
+            # otherwise you’d just accumulate the gradients from all loss.backward() calls
             model.zero_grad(set_to_none=True)
+            # === compute the gradients for all learnable parameters in the model
             self.loss.backward()
+            # === clip the norm of the gradients to 1.0
             torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_norm_clip)
+            # === update the parameters
             self.optimizer.step()
 
             self.trigger_callbacks('on_batch_end')
